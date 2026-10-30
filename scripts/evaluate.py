@@ -25,7 +25,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="baseline_cnn")
     ap.add_argument("--split", default="test", choices=["val", "test"])
-    ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--max-batches", type=int, default=None)
     args = ap.parse_args()
