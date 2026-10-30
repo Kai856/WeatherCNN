@@ -30,10 +30,16 @@ N_EXTRA = 6
 
 
 class HRRRDataset(Dataset):
-    def __init__(self, split: str, cfg: dict | None = None):
+    def __init__(self, split: str, cfg: dict | None = None, start: str | None = None, end: str | None = None):
+        """split: "train" or "test". start/end (inclusive) further restrict samples by input time t."""
         self.cfg = cfg or load_config()
         samples = pd.read_parquet(METADATA_DIR / "samples.parquet")
-        self.samples = samples[samples.split == split].reset_index(drop=True)
+        keep = samples.split == split
+        if start is not None:
+            keep &= samples.t >= pd.Timestamp(start)
+        if end is not None:
+            keep &= samples.t <= pd.Timestamp(end)
+        self.samples = samples[keep].reset_index(drop=True)
         norm = read_json(METADATA_DIR / "normalization_stats.json")
         tstats = read_json(METADATA_DIR / "transform_stats.json")
         self._root = None
@@ -108,3 +114,12 @@ class HRRRDataset(Dataset):
             k = TARGET_NAMES.index(c)
             out[..., k] = inv(out[..., k])
         return torch.from_numpy(out) if is_torch else out
+
+
+def make_datasets(cfg: dict | None = None) -> dict[str, HRRRDataset]:
+    """fit / val (last training year) / test datasets."""
+    cfg = cfg or load_config()
+    ms = cfg["model_selection"]
+    return {"fit": HRRRDataset("train", cfg, *ms["fit"]),
+            "val": HRRRDataset("train", cfg, *ms["val"]),
+            "test": HRRRDataset("test", cfg)}

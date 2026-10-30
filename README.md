@@ -85,6 +85,15 @@ from hrrr_dataset import HRRRDataset
 train = DataLoader(HRRRDataset("train"), batch_size=16, shuffle=True, num_workers=4)
 ```
 
+**Baseline model.** Training uses 2021-10-01…2024-09-29 (`model_selection.fit` in `config.yaml`) and selects
+the checkpoint on 2024-10-01…2025-09-30 (`model_selection.val`); the test year is only used by
+`evaluate.py`. On Pax:
+
+```bash
+python scripts/baselines.py          # reference forecasts, a few seconds
+sbatch slurm/train.sbatch            # GPU: trains, then writes logs/eval_baseline_cnn.md
+```
+
 Normalize with `metadata/normalization_stats.json`, which is computed on the training split only. Continuous
 targets get mean/std. `rain_binary` stays binary; use a classification loss, for example `BCEWithLogitsLoss`
 with the stored `pos_weight`.
@@ -103,6 +112,10 @@ scripts/validate_dataset.py quality checks
 scripts/plot_dataset.py     summary figures (maps, Tufts time series, distributions, coverage) -> plots/
 scripts/transform_stats.py  train-only stats of log-transformed apcp1h, cape, cin and precip target
 scripts/hrrr_dataset.py     PyTorch Dataset: normalized (55, 223, 291) inputs, normalized (7,) targets
+scripts/baselines.py        persistence + climatology reference forecasts, metrics -> logs/baselines.md
+scripts/model.py            baseline CNN (5 stride-2 conv blocks, flatten, dense head; 3.2M params)
+scripts/train.py            training with val = last training year -> checkpoints/, logs/train_*.csv
+scripts/evaluate.py         test-year scores, CNN vs reference forecasts -> logs/eval_*.md
 slurm/                      job scripts for Pax
 metadata/                   inventory, grid, provenance, stats, summaries (generated; small; not in git)
 logs/                       logs and reports (generated; not in git)
