@@ -18,12 +18,17 @@ def block(c_in: int, c_out: int) -> nn.Sequential:
 
 class BaselineCNN(nn.Module):
     def __init__(self, in_channels: int = 55, n_outputs: int = 7, grid: tuple[int, int] = (223, 291),
-                 widths: tuple[int, ...] = (32, 64, 128, 128, 128), hidden: int = 256, dropout: float = 0.3):
+                 widths: tuple[int, ...] = (32, 64, 128, 128, 128), hidden: int = 256, dropout: float = 0.3,
+                 pool: tuple[int, int] | None = None):
+        """pool: average-pool the final map to this size before flattening (shrinks the dense head)."""
         super().__init__()
         self.stem = nn.Sequential(nn.Conv2d(in_channels, widths[0], 3, padding=1, bias=False),
                                   nn.BatchNorm2d(widths[0]), nn.ReLU(inplace=True))
         chans = [widths[0], *widths]
-        self.features = nn.Sequential(*[block(a, b) for a, b in zip(chans[:-1], chans[1:])])
+        layers = [block(a, b) for a, b in zip(chans[:-1], chans[1:])]
+        if pool:
+            layers.append(nn.AdaptiveAvgPool2d(tuple(pool)))
+        self.features = nn.Sequential(*layers)
         with torch.no_grad():
             n_flat = self.features(self.stem(torch.zeros(1, in_channels, *grid))).numel()
         self.head = nn.Sequential(nn.Flatten(), nn.Dropout(dropout), nn.Linear(n_flat, hidden), nn.ReLU(inplace=True),

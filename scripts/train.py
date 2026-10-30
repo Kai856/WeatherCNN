@@ -75,6 +75,10 @@ def main():
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--pos-weight", type=float, default=None, help="rain BCE pos_weight (default: neg/pos ratio)")
+    ap.add_argument("--hidden", type=int, default=256, help="dense head width")
+    ap.add_argument("--pool", type=int, nargs=2, default=None, metavar=("H", "W"),
+                    help="average-pool the final feature map to H x W before flattening")
     ap.add_argument("--stride", type=int, default=3, help="use every k-th fit hour per epoch")
     ap.add_argument("--val-stride", type=int, default=3, help="every k-th val hour during training")
     ap.add_argument("--patience", type=int, default=5)
@@ -93,9 +97,10 @@ def main():
     loader_kw = dict(batch_size=args.batch_size, num_workers=args.workers, pin_memory=device.type == "cuda",
                      persistent_workers=args.workers > 0)
     val_loader = DataLoader(val_sub, shuffle=False, **loader_kw)
-    pos_weight = torch.tensor(fit.pos_weight or 1.0, device=device)
+    pos_weight = torch.tensor(args.pos_weight or fit.pos_weight or 1.0, device=device)
 
-    model = BaselineCNN(in_channels=fit.n_channels, grid=fit.shape).to(device)
+    model_kwargs = {"in_channels": fit.n_channels, "grid": tuple(fit.shape), "hidden": args.hidden, "pool": args.pool}
+    model = BaselineCNN(**model_kwargs).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     steps = args.epochs * (args.max_batches or -(-len(fit) // (args.stride * args.batch_size)))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(steps, 1))
@@ -142,7 +147,7 @@ def main():
 
         if val_loss < best:
             best, bad = val_loss, 0
-            torch.save({"model": model.state_dict(), "in_channels": fit.n_channels, "grid": fit.shape,
+            torch.save({"model": model.state_dict(), "model_kwargs": model_kwargs, "pos_weight": pos_weight.item(),
                         "epoch": epoch, "val_loss": val_loss, "val_metrics": metrics, "args": vars(args)}, ckpt_path)
             log.info("  saved %s", ckpt_path)
         else:

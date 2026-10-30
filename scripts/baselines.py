@@ -33,7 +33,19 @@ def auc(y: np.ndarray, p: np.ndarray) -> float:
     return float((ranks[pos].sum() - pos.sum() * (pos.sum() + 1) / 2) / (pos.sum() * neg.sum()))
 
 
-def score(y_true: np.ndarray, y_pred: np.ndarray, rain_prob: np.ndarray) -> dict:
+def f1(y: np.ndarray, p: np.ndarray, threshold: float) -> float:
+    hit = p >= threshold
+    tp, fp, fn = (hit & (y == 1)).sum(), (hit & (y == 0)).sum(), (~hit & (y == 1)).sum()
+    return float(2 * tp / (2 * tp + fp + fn)) if tp + fp + fn else float("nan")
+
+
+def best_threshold(y: np.ndarray, p: np.ndarray) -> float:
+    """Rain probability threshold that maximizes F1 (pick on val, apply to test)."""
+    grid = np.unique(np.quantile(p, np.linspace(0.5, 0.999, 200)))
+    return float(max(grid, key=lambda t: np.nan_to_num(f1(y, p, t))))
+
+
+def score(y_true: np.ndarray, y_pred: np.ndarray, rain_prob: np.ndarray, threshold: float = 0.5) -> dict:
     """y_true, y_pred: (N, 7) in real units (y_pred[:, 6] unused); rain_prob: (N,) probability of rain_binary."""
     out = {}
     for c in RMSE_TARGETS:
@@ -45,9 +57,7 @@ def score(y_true: np.ndarray, y_pred: np.ndarray, rain_prob: np.ndarray) -> dict
     ok = np.isfinite(rain_prob)
     out["rain Brier"] = float(np.mean((rain_prob[ok] - rb[ok]) ** 2))
     out["rain AUC"] = auc(rb[ok], rain_prob[ok])
-    hit = rain_prob[ok] >= 0.5
-    tp, fp, fn = (hit & (rb[ok] == 1)).sum(), (hit & (rb[ok] == 0)).sum(), (~hit & (rb[ok] == 1)).sum()
-    out["rain F1"] = float(2 * tp / (2 * tp + fp + fn)) if tp + fp + fn else float("nan")
+    out["rain F1"] = f1(rb[ok], rain_prob[ok], threshold)
     return out
 
 

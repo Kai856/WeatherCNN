@@ -92,6 +92,7 @@ the checkpoint on 2024-10-01…2025-09-30 (`model_selection.val`); the test year
 ```bash
 python scripts/baselines.py          # reference forecasts, a few seconds
 sbatch slurm/train.sbatch            # GPU: trains, then writes logs/eval_baseline_cnn.md
+RUN_NAME=cnn_v2 sbatch slurm/train.sbatch --pos-weight 8 --lr 3e-4 --weight-decay 1e-3 --pool 4 5
 ```
 
 Normalize with `metadata/normalization_stats.json`, which is computed on the training split only. Continuous
