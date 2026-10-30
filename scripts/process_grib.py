@@ -242,11 +242,16 @@ def process_hour(cfg: dict, grid: dict, v: pd.Timestamp, d: Path) -> dict:
             native = crop(vals, w)
             lo, hi = ch["bounds"]
             nan_frac = float(np.isnan(native).mean())
-            oob = int(np.count_nonzero((native < lo) | (native > hi)))
-            row.update({"nan_frac": nan_frac, "out_of_bounds": oob,
+            # GRIB packing can put physical limits (e.g. CIN <= 0) off by up to one packing step
+            tol = meta["q_src"]
+            oob = int(np.count_nonzero((native < lo - tol) | (native > hi + tol)))
+            clipped = int(np.count_nonzero((native < lo) | (native > hi))) - oob
+            row.update({"nan_frac": nan_frac, "out_of_bounds": oob, "clipped_within_packing_step": clipped,
                         "min": float(np.nanmin(native)), "max": float(np.nanmax(native))})
             if oob:
-                raise CheckError(f"{oob} values outside bounds [{lo}, {hi}] (min {row['min']}, max {row['max']})")
+                raise CheckError(f"{oob} values outside bounds [{lo}, {hi}] by more than the packing step {tol:g} "
+                                 f"(min {row['min']}, max {row['max']})")
+            native = np.clip(native, lo, hi)
             if nan_frac > 0:
                 raise CheckError(f"{nan_frac:.4f} of crop is missing")
             fields[k] = coarsen(native, f)
@@ -359,6 +364,8 @@ def main():
                     help="also write a float32 copy and log int16 quantization errors (pilot only)")
     ap.add_argument("--keep-grib", action="store_true")
     ap.add_argument("--ignore-gate", action="store_true", help="allow >7-day ranges without a passing pilot report")
+    ap.add_argument("--redo-invalid", action="store_true",
+                    help="also re-process hours that are done but not fully valid (record_ok false)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -393,6 +400,8 @@ def main():
 
     writer = StoreWriter(cfg, store, compare_path)
     done = writer.root["done"][:]
+    if args.redo_invalid:
+        done &= writer.root["record_ok"][:]
     todo = [v for v in hourly_range(start, end) if not done[time_index(cfg, v)]]
     log.info("processing %s..%s: %d hours to do (%d already done)", start, end, len(todo),
              len(hourly_range(start, end)) - len(todo))

@@ -11,7 +11,7 @@ time *t* to conditions at Tufts University at *t + 24 h*. The dataset covers 202
 | Inputs `X[t]` | 49 channels on a 223 × 291 grid (6 km, 2×2 block mean of HRRR's native 3 km Lambert grid) |
 | Static | orography and land fraction on the same grid (stored once) |
 | Targets `y[t]` | 7 values at the native 3 km cell nearest Tufts, valid at *t + 24 h* |
-| Splits | train 2021-10-01…2025-09-30, val 2025-10-01…2026-03-31, test 2026-04-01…2026-09-30 (by input time; the target must fall in the same split) |
+| Splits | train 2021-10-01…2025-09-30 (4 years), test 2025-10-01…2026-09-30 (1 year) (by input time; the target must fall in the same split) |
 
 **Task definition.** Inputs are the HRRR analysis valid at *t*. Targets are the HRRR analysis valid at *t + 24 h*
 (precipitation: HRRR's 1-hour forecast from the *t + 23 h* initialization, the only source of a true 1-hour
@@ -138,6 +138,9 @@ activates the venv. Run the stages in order:
   leaves that hour undone, so it is redone in full.
 - Network or transient errors leave the hour undone and are logged to `logs/process_failures.csv` as
   `processing error (left undone)`. Re-running fixes them.
+- Values outside a channel's bounds by at most one GRIB packing step (e.g. CIN stored as +0.08 instead of 0)
+  are clipped to the bounds and counted in the provenance column `clipped_within_packing_step`.
+  `sbatch slurm/process_months.sbatch --redo-invalid` re-processes hours that are done but not fully valid.
 - Data problems (missing message, wrong valid time, values outside bounds) mark the channel invalid,
   set `done`, and are listed in `metadata/missing_timestamps.csv` by `build_dataset.py`. Samples that need
   invalid data are excluded. Nothing is interpolated.

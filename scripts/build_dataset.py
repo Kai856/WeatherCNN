@@ -163,10 +163,12 @@ def main():
     if fail.exists():
         f = pd.read_csv(fail)
         f["valid_time"] = pd.to_datetime(f.valid_time, format="mixed")
-        # transient errors ("*" rows) are resolved once the hour is processed on a later run
+        # transient errors ("*" rows) are resolved once the hour is processed; channel problems are resolved
+        # once a re-run (--redo-invalid) makes the hour fully valid
         if len(f):
             is_done = f.valid_time.isin(times[done])
-            f = f[is_done == (f.channel != "*")]
+            still_bad = f.valid_time.isin(times[done & ~(input_ok & target_ok)])
+            f = f[((f.channel == "*") & ~is_done) | ((f.channel != "*") & still_bad)]
         if len(f):
             g = f.groupby("valid_time").apply(lambda d: "; ".join(f"{c}: {r}" for c, r in zip(d.channel, d.reason)),
                                               include_groups=False)

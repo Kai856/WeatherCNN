@@ -166,7 +166,7 @@ def main():
                 and (split_of(cfg, pd.DatetimeIndex(samples.t)) == samples.split.values).all())
     sets = {n: set(samples.t[samples.split == n]) for n in sp}
     disjoint = all(not (sets[a] & sets[b]) for a in sp for b in sp if a < b)
-    rep.check("Train, validation, and test periods do not overlap", no_overlap and same and disjoint,
+    rep.check("Split periods do not overlap", no_overlap and same and disjoint,
               f"period bounds ordered and disjoint: {no_overlap}; every input and target in its sample's split: {same}; "
               f"sample sets disjoint: {disjoint}; counts {samples.split.value_counts().to_dict()}")
 
