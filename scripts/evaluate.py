@@ -1,5 +1,8 @@
 """Score the best checkpoint on the test year against persistence and climatology.
 
+The CNN's rain probabilities are Platt-calibrated on val: p = sigmoid(a * logit + b), which undoes the
+over-prediction caused by pos_weight. Rain F1 thresholds are also tuned on val, per method.
+
 Output: logs/eval_<name>.md
 
 Usage
@@ -9,9 +12,11 @@ from __future__ import annotations
 
 import argparse
 
+import numpy as np
 import pandas as pd
 import torch
 import zarr
+from torch import nn
 from torch.utils.data import DataLoader
 
 from baselines import best_threshold, format_table, reference_forecasts, score
@@ -19,6 +24,23 @@ from common import LOG_DIR, METADATA_DIR, load_config, setup_logging
 from hrrr_dataset import make_datasets
 from model import BaselineCNN
 from train import CKPT_DIR, predict
+
+
+def fit_platt(logit: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """(a, b) minimizing log loss of sigmoid(a * logit + b) against y."""
+    z, t = torch.as_tensor(logit, dtype=torch.float64), torch.as_tensor(y, dtype=torch.float64)
+    ab = torch.tensor([1.0, 0.0], dtype=torch.float64, requires_grad=True)
+    opt = torch.optim.LBFGS([ab], max_iter=200)
+
+    def closure():
+        opt.zero_grad()
+        loss = nn.functional.binary_cross_entropy_with_logits(ab[0] * z + ab[1], t)
+        loss.backward()
+        return loss
+
+    opt.step(closure)
+    a, b = ab.detach().tolist()
+    return a, b
 
 
 def main():
@@ -44,7 +66,7 @@ def main():
     periods = {"val": (ms["val"], ms["fit"]), "test": (sp["test"], sp["train"])}
 
     def forecasts(split):
-        """{method: (truth, prediction, rain probability)} in real units for one split."""
+        """{method: (truth, prediction, rain probability)} in real units for one split (CNN: rain logit)."""
         ds = datasets[split]
         loader = DataLoader(ds, batch_size=args.batch_size, num_workers=args.workers,
                             pin_memory=device.type == "cuda")
@@ -53,18 +75,29 @@ def main():
         log.info("%s loss %.4f", split, loss)
         n = len(out)
         truth, refs = reference_forecasts(root, samples, *periods[split], eval_samples=ds.samples)
-        res = {"CNN": (ds.unnormalize(y).numpy(), ds.unnormalize(out).numpy(), torch.sigmoid(out[:, 6]).numpy())}
+        res = {"CNN": (ds.unnormalize(y).numpy(), ds.unnormalize(out).numpy(), out[:, 6].numpy().astype(np.float64))}
         res.update({m: (truth[:n], p[:n], rp[:n]) for m, (p, rp) in refs.items()})
         return res
 
+    def calibrate(res):
+        t, p, logit = res["CNN"]
+        res["CNN"] = (t, p, 1 / (1 + np.exp(-(a * logit + b))))
+        return 1 / (1 + np.exp(-logit))
+
     val = forecasts("val")
+    a, b = fit_platt(val["CNN"][2], val["CNN"][0][:, 6])
+    calibrate(val)
     thresholds = {m: best_threshold(t[:, 6], rp) for m, (t, _, rp) in val.items()}
     final = val if args.split == "val" else forecasts(args.split)
+    raw = calibrate(final) if final is not val else None
     results = {m: score(t, p, rp, thresholds[m]) for m, (t, p, rp) in final.items()}
     period, n = periods[args.split][0], len(final["CNN"][0])
+    raw_brier = f"; uncalibrated CNN Brier {np.mean((raw - final['CNN'][0][:, 6]) ** 2):.3f}" if raw is not None else ""
 
+    sel = f"val skill {ckpt['val_skill']:.4f}" if "val_skill" in ckpt else f"val loss {ckpt['val_loss']:.4f}"
     lines = [f"# {args.name} on {args.split} ({period[0]} .. {period[1]}, {n:,} samples)", "",
-             f"Checkpoint: epoch {ckpt['epoch']}, val loss {ckpt['val_loss']:.4f}. Lower is better except AUC and F1.",
+             f"Checkpoint: epoch {ckpt['epoch']}, {sel}. Lower is better except AUC and F1.",
+             f"CNN rain probability Platt-calibrated on val: sigmoid({a:.3f} * logit + {b:.3f}){raw_brier}.",
              "Rain F1 uses each method's threshold tuned on val: "
              + ", ".join(f"{m} {t:.3f}" for m, t in thresholds.items()) + ".",
              "", *format_table(results), ""]

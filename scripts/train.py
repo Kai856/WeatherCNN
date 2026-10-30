@@ -3,8 +3,11 @@
 Loss = MSE on the 6 normalized continuous targets + BCEWithLogits(pos_weight) on rain_binary.
 Each epoch uses every k-th fit hour (random offset) because neighboring hours are nearly identical.
 
+Model selection / early stopping use the val skill score: mean over t2m, rh2m, u10, v10, gust of
+RMSE_cnn / RMSE_climatology, plus (1 - AUC_cnn) / (1 - AUC_climatology) for rain. Lower is better; 1 = climatology.
+
 Outputs
-  checkpoints/<name>.pt          best model by val loss
+  checkpoints/<name>.pt          best model by val skill score
   logs/train_<name>.csv          per-epoch losses, val metrics in real units, learning rate
 
 Usage
@@ -22,12 +25,19 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset
 
-from baselines import score
-from common import LOG_DIR, PROJECT_ROOT, setup_logging
+from baselines import reference_forecasts, score
+from common import LOG_DIR, METADATA_DIR, PROJECT_ROOT, load_config, setup_logging
 from hrrr_dataset import make_datasets
 from model import BaselineCNN, n_params
 
 CKPT_DIR = PROJECT_ROOT / "checkpoints"
+SELECT_RMSE = ["t2m RMSE", "rh2m RMSE", "u10 RMSE", "v10 RMSE", "gust RMSE"]
+
+
+def skill_score(m: dict, ref: dict) -> float:
+    """Mean error ratio vs a reference forecast (climatology); < 1 means better than the reference."""
+    ratios = [m[k] / ref[k] for k in SELECT_RMSE] + [(1 - m["rain AUC"]) / (1 - ref["rain AUC"])]
+    return float(np.nanmean(ratios))
 
 
 def loss_fn(out: torch.Tensor, y: torch.Tensor, pos_weight: torch.Tensor) -> torch.Tensor:
@@ -99,6 +109,10 @@ def main():
     loader_kw = dict(batch_size=args.batch_size, num_workers=args.workers, pin_memory=device.type == "cuda",
                      persistent_workers=args.workers > 0)
     val_loader = DataLoader(val_sub, shuffle=False, **loader_kw)
+    ms = load_config()["model_selection"]
+    truth, refs = reference_forecasts(val.root, pd.read_parquet(METADATA_DIR / "samples.parquet"), ms["val"],
+                                      ms["fit"], eval_samples=val.samples.iloc[::args.val_stride])
+    clim, clim_rain = refs["climatology"]
     pos_weight = torch.tensor(args.pos_weight or fit.pos_weight or 1.0, device=device)
 
     model_kwargs = {"in_channels": fit.n_channels, "grid": tuple(fit.shape), "hidden": args.hidden, "pool": args.pool,
@@ -140,26 +154,28 @@ def main():
 
         val_loss, vout, vy = predict(model, val_loader, device, pos_weight, args.max_batches)
         metrics = real_metrics(val, vout, vy)
-        row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "lr": sched.get_last_lr()[0],
-               "seconds": time.time() - t0, **{f"val {k}": v for k, v in metrics.items()}}
+        n_val = len(vout)
+        val_skill = skill_score(metrics, score(truth[:n_val], clim[:n_val], clim_rain[:n_val]))
+        row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "val_skill": val_skill,
+               "lr": sched.get_last_lr()[0], "seconds": time.time() - t0, **{f"val {k}": v for k, v in metrics.items()}}
         history.append(row)
         pd.DataFrame(history).to_csv(LOG_DIR / f"train_{args.name}.csv", index=False)
-        log.info("epoch %d: train %.4f val %.4f | t2m RMSE %.2f K, gust RMSE %.2f, rain AUC %.3f | %.0fs",
-                 epoch, train_loss, val_loss, metrics["t2m RMSE"], metrics["gust RMSE"], metrics["rain AUC"],
-                 row["seconds"])
+        log.info("epoch %d: train %.4f val %.4f skill %.4f | t2m RMSE %.2f K, gust RMSE %.2f, rain AUC %.3f | %.0fs",
+                 epoch, train_loss, val_loss, val_skill, metrics["t2m RMSE"], metrics["gust RMSE"],
+                 metrics["rain AUC"], row["seconds"])
 
-        if val_loss < best:
-            best, bad = val_loss, 0
+        if val_skill < best:
+            best, bad = val_skill, 0
             torch.save({"model": model.state_dict(), "model_kwargs": model_kwargs, "pos_weight": pos_weight.item(),
-                        "prev_hours": args.prev_hours,
-                        "epoch": epoch, "val_loss": val_loss, "val_metrics": metrics, "args": vars(args)}, ckpt_path)
+                        "prev_hours": args.prev_hours, "epoch": epoch, "val_loss": val_loss,
+                        "val_skill": val_skill, "val_metrics": metrics, "args": vars(args)}, ckpt_path)
             log.info("  saved %s", ckpt_path)
         else:
             bad += 1
             if bad >= args.patience:
-                log.info("early stopping: no val improvement for %d epochs", args.patience)
+                log.info("early stopping: no val skill improvement for %d epochs", args.patience)
                 break
-    log.info("best val loss %.4f", best)
+    log.info("best val skill %.4f (1 = climatology)", best)
 
 
 if __name__ == "__main__":
