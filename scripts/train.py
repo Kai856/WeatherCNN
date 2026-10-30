@@ -78,6 +78,7 @@ def main():
     ap.add_argument("--pos-weight", type=float, default=None, help="rain BCE pos_weight (default: neg/pos ratio)")
     ap.add_argument("--hidden", type=int, default=256, help="dense head width")
     ap.add_argument("--kernel", type=int, default=3, help="conv kernel size (odd)")
+    ap.add_argument("--prev-hours", type=int, default=0, help="also input the fields from t - N hours (e.g. 24)")
     ap.add_argument("--pool", type=int, nargs=2, default=None, metavar=("H", "W"),
                     help="average-pool the final feature map to H x W before flattening")
     ap.add_argument("--stride", type=int, default=3, help="use every k-th fit hour per epoch")
@@ -92,7 +93,7 @@ def main():
     rng = np.random.default_rng(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ds = make_datasets()
+    ds = make_datasets(prev_hours=args.prev_hours)
     fit, val = ds["fit"], ds["val"]
     val_sub = Subset(val, range(0, len(val), args.val_stride))
     loader_kw = dict(batch_size=args.batch_size, num_workers=args.workers, pin_memory=device.type == "cuda",
@@ -150,6 +151,7 @@ def main():
         if val_loss < best:
             best, bad = val_loss, 0
             torch.save({"model": model.state_dict(), "model_kwargs": model_kwargs, "pos_weight": pos_weight.item(),
+                        "prev_hours": args.prev_hours,
                         "epoch": epoch, "val_loss": val_loss, "val_metrics": metrics, "args": vars(args)}, ckpt_path)
             log.info("  saved %s", ckpt_path)
         else:

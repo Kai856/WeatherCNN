@@ -75,11 +75,13 @@ def climatology(ref_times: pd.DatetimeIndex, ref_y: np.ndarray, query_times: pd.
     return table[query_times.dayofyear.to_numpy(), query_times.hour.to_numpy()]
 
 
-def reference_forecasts(root, samples, eval_period, ref_period):
-    """Persistence and climatology predictions (real units) and the truth for samples in eval_period."""
+def reference_forecasts(root, samples, eval_period, ref_period, eval_samples=None):
+    """Persistence and climatology predictions (real units) and the truth for samples in eval_period.
+    eval_samples: score exactly these rows instead (e.g. a Dataset's samples, to stay aligned with its order)."""
     yall = root["target_fields"][:].astype(np.float64)
     tall = pd.DatetimeIndex(pd.to_datetime(root["time"][:], unit="h", origin="unix"))
-    ev = samples[(samples.t >= pd.Timestamp(eval_period[0])) & (samples.t <= pd.Timestamp(eval_period[1]))]
+    ev = eval_samples if eval_samples is not None else samples[
+        (samples.t >= pd.Timestamp(eval_period[0])) & (samples.t <= pd.Timestamp(eval_period[1]))]
     ref = samples[(samples.t >= pd.Timestamp(ref_period[0])) & (samples.t <= pd.Timestamp(ref_period[1]))]
     truth = yall[ev.target_index.values]
     persist = yall[ev.t_index.values]

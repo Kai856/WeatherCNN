@@ -37,7 +37,7 @@ def main():
     kwargs = ckpt.get("model_kwargs") or {"in_channels": ckpt["in_channels"], "grid": tuple(ckpt["grid"])}
     model = BaselineCNN(**kwargs).to(device)
     model.load_state_dict(ckpt["model"])
-    datasets = make_datasets(cfg)
+    datasets = make_datasets(cfg, prev_hours=ckpt.get("prev_hours", 0))
     samples = pd.read_parquet(METADATA_DIR / "samples.parquet")
     root = zarr.open_group(str(cfg["store_path"]), mode="r")
     ms, sp = cfg["model_selection"], cfg["splits"]
@@ -52,7 +52,7 @@ def main():
         loss, out, y = predict(model, loader, device, pos_weight, args.max_batches)
         log.info("%s loss %.4f", split, loss)
         n = len(out)
-        truth, refs = reference_forecasts(root, samples, *periods[split])
+        truth, refs = reference_forecasts(root, samples, *periods[split], eval_samples=ds.samples)
         res = {"CNN": (ds.unnormalize(y).numpy(), ds.unnormalize(out).numpy(), torch.sigmoid(out[:, 6]).numpy())}
         res.update({m: (truth[:n], p[:n], rp[:n]) for m, (p, rp) in refs.items()})
         return res
