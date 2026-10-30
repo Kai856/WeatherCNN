@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=08:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --output=logs/slurm/%x_%j.out
 # Train the baseline CNN (best checkpoint by val loss), then score it on the test year.
 # Extra arguments are passed to train.py; RUN_NAME names the checkpoint and logs, e.g.
