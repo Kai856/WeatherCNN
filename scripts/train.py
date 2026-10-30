@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--pos-weight", type=float, default=None, help="rain BCE pos_weight (default: neg/pos ratio)")
     ap.add_argument("--hidden", type=int, default=256, help="dense head width")
+    ap.add_argument("--kernel", type=int, default=3, help="conv kernel size (odd)")
     ap.add_argument("--pool", type=int, nargs=2, default=None, metavar=("H", "W"),
                     help="average-pool the final feature map to H x W before flattening")
     ap.add_argument("--stride", type=int, default=3, help="use every k-th fit hour per epoch")
@@ -99,7 +100,8 @@ def main():
     val_loader = DataLoader(val_sub, shuffle=False, **loader_kw)
     pos_weight = torch.tensor(args.pos_weight or fit.pos_weight or 1.0, device=device)
 
-    model_kwargs = {"in_channels": fit.n_channels, "grid": tuple(fit.shape), "hidden": args.hidden, "pool": args.pool}
+    model_kwargs = {"in_channels": fit.n_channels, "grid": tuple(fit.shape), "hidden": args.hidden, "pool": args.pool,
+                    "kernel": args.kernel}
     model = BaselineCNN(**model_kwargs).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     steps = args.epochs * (args.max_batches or -(-len(fit) // (args.stride * args.batch_size)))
