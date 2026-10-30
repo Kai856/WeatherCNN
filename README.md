@@ -74,6 +74,17 @@ x = read_inputs(root, int(s.t_index), root.attrs["channel_order"])   # (49, 223,
 y = root["target_fields"][int(s.target_index)]                      # (7,)
 ```
 
+For training, use `HRRRDataset` (after running `python scripts/transform_stats.py` once). Each sample has
+55 input channels: the 49 HRRR channels (`apcp1h` and `cape` as `log1p(x)`, `cin` as `-log1p(-x)`), all
+z-scored with train-only stats, plus orography, land, and sin/cos of hour of day and day of year. Targets
+are z-scored (`precip_1h` in `log1p` space); `ds.unnormalize(pred)` converts predictions back to real units.
+
+```python
+from torch.utils.data import DataLoader
+from hrrr_dataset import HRRRDataset
+train = DataLoader(HRRRDataset("train"), batch_size=16, shuffle=True, num_workers=4)
+```
+
 Normalize with `metadata/normalization_stats.json`, which is computed on the training split only. Continuous
 targets get mean/std. `rain_binary` stays binary; use a classification loss, for example `BCEWithLogitsLoss`
 with the stored `pos_weight`.
@@ -90,6 +101,8 @@ scripts/pilot_report.py     Stage B report + storage gate
 scripts/build_dataset.py    Stage E
 scripts/validate_dataset.py quality checks
 scripts/plot_dataset.py     summary figures (maps, Tufts time series, distributions, coverage) -> plots/
+scripts/transform_stats.py  train-only stats of log-transformed apcp1h, cape, cin and precip target
+scripts/hrrr_dataset.py     PyTorch Dataset: normalized (55, 223, 291) inputs, normalized (7,) targets
 slurm/                      job scripts for Pax
 metadata/                   inventory, grid, provenance, stats, summaries (generated; small; not in git)
 logs/                       logs and reports (generated; not in git)
