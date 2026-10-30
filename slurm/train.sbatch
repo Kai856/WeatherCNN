@@ -11,5 +11,6 @@
 set -e
 source "$(dirname "$0")/env.sh" 2>/dev/null || source "$HOME/hrrr_cnn/slurm/env.sh"
 nvidia-smi --query-gpu=name,memory.total --format=csv
+python -c "import torch; assert torch.cuda.is_available(), f'torch {torch.__version__} cannot use the GPU'"
 python train.py --workers 8 "$@"
 python evaluate.py
