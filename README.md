@@ -89,6 +89,7 @@ scripts/process_grib.py     Stages C/D
 scripts/pilot_report.py     Stage B report + storage gate
 scripts/build_dataset.py    Stage E
 scripts/validate_dataset.py quality checks
+scripts/plot_dataset.py     summary figures (maps, Tufts time series, distributions, coverage) -> plots/
 slurm/                      job scripts for Pax
 metadata/                   inventory, grid, provenance, stats, summaries (generated; small; not in git)
 logs/                       logs and reports (generated; not in git)

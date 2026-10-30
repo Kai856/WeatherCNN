@@ -9,3 +9,4 @@ cfgrib
 xarray
 zarr>=3
 numcodecs
+matplotlib
