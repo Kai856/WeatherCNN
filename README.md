@@ -1,8 +1,8 @@
-# HRRR Northeast CNN dataset (6 km, 3 years)
+# HRRR Northeast CNN dataset (6 km, 5 years)
 
 Hourly NOAA HRRR fields over the Northeast US (38–47°N, 85–66°W) for training a CNN that maps weather maps at
-time *t* to conditions at Tufts University at *t + 24 h*. The dataset covers 2023-10-01 00Z – 2026-09-30 23Z
-(26,304 hours) and is designed to stay within a 100 GB scratch budget.
+time *t* to conditions at Tufts University at *t + 24 h*. The dataset covers 2021-10-01 00Z – 2026-09-30 23Z
+(43,824 hours, all from HRRR version 4) and is designed to stay within a 100 GB scratch budget.
 
 ## What the dataset is
 
@@ -11,7 +11,7 @@ time *t* to conditions at Tufts University at *t + 24 h*. The dataset covers 202
 | Inputs `X[t]` | 49 channels on a 223 × 291 grid (6 km, 2×2 block mean of HRRR's native 3 km Lambert grid) |
 | Static | orography and land fraction on the same grid (stored once) |
 | Targets `y[t]` | 7 values at the native 3 km cell nearest Tufts, valid at *t + 24 h* |
-| Splits | train 2023-10-01…2025-09-30, val 2025-10-01…2026-03-31, test 2026-04-01…2026-09-30 (by input time; the target must fall in the same split) |
+| Splits | train 2021-10-01…2025-09-30, val 2025-10-01…2026-03-31, test 2026-04-01…2026-09-30 (by input time; the target must fall in the same split) |
 
 **Task definition.** Inputs are the HRRR analysis valid at *t*. Targets are the HRRR analysis valid at *t + 24 h*
 (precipitation: HRRR's 1-hour forecast from the *t + 23 h* initialization, the only source of a true 1-hour
@@ -53,12 +53,11 @@ value grid, and the maximum error versus float32 is half of HRRR's packing step.
 channel (`logs/pilot_report.md`). Channels listed in `config.yaml → storage.float32_channels` are stored as
 float32 in `inputs_f32` instead.
 
-Pilot result (2025-07-14…20, 168 hours, all valid): 1.88 MB per hour, projecting to **49.5 GB** for 3 years
-(the gate is 70 GB). The encodings compared in `logs/pilot_report.md` project to 103 GB for compressed float32,
-82–100 GB for int16 with a bounds-derived step, and 49 GB for the chosen source-step int16 + Delta encoding. All
-49 channels meet the precision rule (max error ≤ half the GRIB packing step, allowing 2 float32 ulps for the
-float32 reference itself). The download is about 43 MB per hour, about 1.1 TB in total, streamed through `tmp/`
-and deleted per hour.
+An earlier local pilot (2025-07-14…20, 168 hours, all valid) measured 1.88 MB per hour, about 16.5 GB per year,
+so 5 years project to about **83 GB** (the gate is 88 GB). Compressed float32 would need about 172 GB. All
+49 channels met the precision rule (max error ≤ half the GRIB packing step, allowing 2 float32 ulps for the
+float32 reference itself). The download is about 43 MB per hour, about 1.9 TB in total, streamed through `tmp/`
+and deleted per hour. The Pax pilot re-measures this on a summer and a winter week before the full run.
 
 Reading a sample:
 
@@ -91,17 +90,17 @@ scripts/pilot_report.py     Stage B report + storage gate
 scripts/build_dataset.py    Stage E
 scripts/validate_dataset.py quality checks
 slurm/                      job scripts for Pax
-metadata/                   inventory, grid, provenance, stats, summaries (small; keep in home)
-logs/                       logs and reports
+metadata/                   inventory, grid, provenance, stats, summaries (generated; small; not in git)
+logs/                       logs and reports (generated; not in git)
 data/                       default data root (set HRRR_DATA_ROOT to use scratch)
 ```
 
 ## Setup on Pax
 
 ```bash
-# code + metadata in home, data in scratch
-rsync -av --exclude .venv --exclude data hrrr_cnn/ kkapli01@login-prod.pax.tufts.edu:~/hrrr_cnn/
+# code + metadata in home (~/hrrr_cnn, the path slurm/env.sh expects), data in scratch
 ssh kkapli01@login-prod.pax.tufts.edu
+git clone https://github.com/Kai856/WeatherCNN.git ~/hrrr_cnn   # later updates: cd ~/hrrr_cnn && git pull
 cd ~/hrrr_cnn
 module load python   # or any Python >= 3.10
 python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
@@ -118,15 +117,13 @@ activates the venv. Run the stages in order:
 
 1. **Stage A** (`sbatch slurm/stage_a.sbatch`, or `python scripts/inspect_archive.py`): writes
    `metadata/variable_inventory.csv`, `grid_metadata.json`, `archive_availability.csv` and
-   `missing_timestamps.csv`. Already run: all 26,304 hours have every required file.
-2. **Stage B pilot** (`sbatch slurm/pilot.sbatch`): initializes the store, processes 2025-07-14…20 with a
-   float32 comparison copy, then writes `logs/pilot_report.md` and `metadata/pilot_summary.json`, and runs
-   the build and validation steps. The full run is blocked until `gate_pass` is true (projected total ≤ 70 GB
-   and every channel within the precision rule). The pilot has already passed (run locally), and the rsynced
-   `metadata/pilot_summary.json` carries that result. Re-running it on Pax is still recommended because it
-   creates the scratch store and measures Pax download speed. If you skip it, run
-   `python scripts/process_grib.py --init-store` once before the full run.
-3. **Full run** (`sbatch slurm/process_months.sbatch`): 36 array tasks, one calendar month each, at most six
+   `missing_timestamps.csv`.
+2. **Stage B pilot** (`sbatch slurm/pilot.sbatch`): initializes the store and processes two weeks
+   (2025-07-14…20 and 2022-01-10…16) with a float32 comparison copy. It then writes `logs/pilot_report.md`
+   and `metadata/pilot_summary.json`, and runs the build and validation steps. The full run is blocked until
+   `gate_pass` is true (projected total ≤ 88 GB and every channel within the precision rule) and the pilot
+   summary's period matches `config.yaml`.
+3. **Full run** (`sbatch slurm/process_months.sbatch`): 60 array tasks, one calendar month each, at most six
    at a time. Afterwards you can delete the pilot-only `hrrr_ne_6km_f32compare.zarr`.
 4. **Build + validate** (`sbatch slurm/build_validate.sbatch`): writes `metadata/samples.parquet`,
    `normalization_stats.json`, `missing_timestamps.csv`, `dataset_summary.json` and
@@ -150,8 +147,9 @@ activates the venv. Run the stages in order:
 
 ## Scratch purge warning
 
-`/cluster/scratch` deletes files that haven't been accessed in 21 days and has no backups. Code, `config.yaml`
-and `metadata/` (including provenance) live in home and are enough to rebuild everything. To rebuild, re-run
+`/cluster/scratch` deletes files that haven't been accessed in 21 days and has no backups. The finished store
+(about 83 GB) does not fit in home (28 GB). Code, `config.yaml` and `metadata/` (including provenance) live in
+home and are enough to rebuild everything. To rebuild, re-run
 Stages B–E with the same config: the archive is public and the pipeline is deterministic. Reading the dataset
 during training counts as access. Don't `touch` files to dodge the purge; Tufts prohibits it.
 

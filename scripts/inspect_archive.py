@@ -27,7 +27,7 @@ from common import (METADATA_DIR, LOG_DIR, ANL_DESC, APCP_1H_DESC, channel_sourc
                     haversine_km, hourly_range, load_config, make_session, native_xy, north_vector, period_hours,
                     required_files, setup_logging, write_json)
 
-SAMPLE_DATES = ["2023-10-01", "2025-01-15", "2025-04-01", "2025-07-15", "2026-09-30"]
+SAMPLE_DATES = ["2021-10-01", "2022-07-15", "2023-10-01", "2025-01-15", "2025-04-01", "2025-07-15", "2026-09-30"]
 SAMPLE_HOURS = [0, 18]
 S3_NS = {"s": "http://s3.amazonaws.com/doc/2006-03-01/"}
 KEY_RE = re.compile(r"hrrr\.t(\d\d)z\.wrf(sfc|prs)f(\d\d)\.grib2(\.idx)?$")

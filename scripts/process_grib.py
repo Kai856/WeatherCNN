@@ -380,9 +380,14 @@ def main():
         start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
     pilot = METADATA_DIR / "pilot_summary.json"
     if end - start > pd.Timedelta(days=7) and not args.ignore_gate:
-        if not pilot.exists() or not json.loads(pilot.read_text()).get("gate_pass"):
+        summary = json.loads(pilot.read_text()) if pilot.exists() else {}
+        if not summary.get("gate_pass"):
             raise SystemExit("refusing to process more than 7 days: the pilot gate has not passed "
                              "(run the pilot and scripts/pilot_report.py first, or pass --ignore-gate)")
+        period = [cfg["period"]["start"], cfg["period"]["end"]]
+        if summary.get("period") != period:
+            raise SystemExit(f"refusing to process more than 7 days: pilot_summary.json was made for period "
+                             f"{summary.get('period')}, config.yaml has {period}; re-run the pilot report")
     if start.hour != 0 or end.hour != 23:
         log.warning("range %s..%s is not day-aligned; do not run another job on the same days concurrently", start, end)
 

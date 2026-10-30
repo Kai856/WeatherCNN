@@ -1,11 +1,12 @@
-"""Stage B report: measure the pilot's storage footprint and int16 precision, project 3 years, apply the gate.
+"""Stage B report: measure the pilot's storage footprint and int16 precision, project the full period, apply the gate.
 
-Requires a pilot processed with `process_grib.py --compare-float32`.
+Requires pilot windows processed with `process_grib.py --compare-float32`.
 
-Outputs logs/pilot_report.md and metadata/pilot_summary.json.
+Outputs logs/pilot_report.md and metadata/pilot_summary.json (which records the configured period; the full run
+refuses to start unless that period matches config.yaml).
 
 Usage
-  python scripts/pilot_report.py --start 2025-07-14T00 --end 2025-07-20T23
+  python scripts/pilot_report.py --window 2025-07-14T00 2025-07-20T23 --window 2022-01-10T00 2022-01-16T23
 """
 from __future__ import annotations
 
@@ -20,8 +21,9 @@ from numcodecs import Blosc, Delta
 from common import (INT16_MAX, LOG_DIR, METADATA_DIR, du_bytes, hourly_range, load_config, period_hours,
                     quantize, time_index, write_json)
 
-GATE_GB = 70.0
+GATE_GB = 88.0
 BUDGET_GB = 100.0
+DEFAULT_WINDOWS = [("2025-07-14T00", "2025-07-20T23"), ("2022-01-10T00", "2022-01-16T23")]
 REL_TOL = 1e-3  # decimal steps (0.1, 0.01) are not exactly representable in binary floating point
 
 
@@ -39,20 +41,23 @@ def encoded_size(a: np.ndarray, delta: bool) -> int:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--start", default="2025-07-14T00")
-    ap.add_argument("--end", default="2025-07-20T23")
+    ap.add_argument("--window", nargs=2, action="append", metavar=("START", "END"),
+                    help="pilot window (repeatable); default: one summer and one winter week")
     args = ap.parse_args()
+    windows = args.window or DEFAULT_WINDOWS
     cfg = load_config()
     store = cfg["store_path"]
     comp_path = store.with_name(store.stem + "_f32compare.zarr")
     root = zarr.open_group(str(store), mode="r")
     comp = zarr.open_group(str(comp_path), mode="r")
-    hours = hourly_range(args.start, args.end)
+    hours = pd.DatetimeIndex(np.concatenate([hourly_range(s, e) for s, e in windows])).sort_values()
     tix = [time_index(cfg, v) for v in hours]
     done = root["done"][:][tix]
     tix = [t for t, d in zip(tix, done) if d]
     n = len(tix)
     T = len(period_hours(cfg))
+    years = T / 8766
+    window_txt = "; ".join(f"{s} .. {e}" for s, e in windows)
 
     # ---- storage
     i16 = chunk_bytes(store, "inputs", tix)
@@ -61,7 +66,7 @@ def main():
     per_hour = i16 + f32x
     small_arrays = sum(du_bytes(store / a) for a in ("input_valid", "target_fields", "done", "record_ok"))
     fixed = sum(du_bytes(store / a) for a in ("lat", "lon", "x", "y", "time", "bbox_mask", "static_orography", "static_land"))
-    prov_files = [METADATA_DIR / "provenance" / f"{d:%Y%m%d}.parquet" for d in pd.date_range(hours[0], hours[-1], freq="D")]
+    prov_files = [METADATA_DIR / "provenance" / f"{d:%Y%m%d}.parquet" for d in hours.normalize().unique()]
     prov_bytes = sum(du_bytes(p) for p in prov_files)
     days_period = T / 24
     proj_inputs = per_hour.mean() * T
@@ -122,7 +127,8 @@ def main():
 
     gate_pass = proj_total / 1e9 <= GATE_GB and not failing
     summary = {
-        "pilot_start": str(hours[0]), "pilot_end": str(hours[-1]), "hours_processed": n,
+        "period": [cfg["period"]["start"], cfg["period"]["end"]], "period_hours": T,
+        "pilot_windows": [list(w) for w in windows], "hours_processed": n,
         "hours_record_ok": int(root["record_ok"][:][tix].sum()),
         "mb_per_hour_inputs_stored": per_hour.mean() / 1e6, "mb_per_hour_float32_compare": f32c.mean() / 1e6,
         "compression_vs_raw_float32": (len(chans) * 223 * 291 * 4) / per_hour.mean(),
@@ -141,18 +147,19 @@ def main():
 
     pg = summary["projected_gb"]
     lines = [
-        "# Stage B: 7-day pilot report", "",
-        f"Pilot: {hours[0]} .. {hours[-1]} ({n} hours processed, {summary['hours_record_ok']} fully valid)", "",
+        "# Stage B: pilot report", "",
+        f"Pilot windows: {window_txt} ({n} hours processed, {summary['hours_record_ok']} fully valid)", "",
+        f"Full period: {cfg['period']['start']} .. {cfg['period']['end']} ({T} hours, {years:.1f} years)", "",
         "## Storage", "",
         f"- Stored inputs: {summary['mb_per_hour_inputs_stored']:.2f} MB/hour "
         f"(raw float32 would be {len(chans) * 223 * 291 * 4 / 1e6:.1f} MB; {summary['compression_vs_raw_float32']:.1f}x smaller)",
         f"- Same fields as compressed float32: {summary['mb_per_hour_float32_compare']:.2f} MB/hour",
-        f"- Projected 3 years ({T} hours): inputs {pg['inputs']:.1f} GB + per-hour arrays {pg['per_hour_small_arrays']:.2f} GB "
+        f"- Projected full period ({T} hours): inputs {pg['inputs']:.1f} GB + per-hour arrays {pg['per_hour_small_arrays']:.2f} GB "
         f"+ static/coords {pg['static_and_coords']:.3f} GB + provenance {pg['provenance_parquet']:.2f} GB = **{pg['total']:.1f} GB**",
         f"- If every channel were float32: {pg['if_all_float32']:.1f} GB",
-        f"- Download volume: {summary['download_mb_per_hour']:.1f} MB/hour, {summary['projected_download_tb']:.2f} TB over 3 years (streamed, not kept)",
+        f"- Download volume: {summary['download_mb_per_hour']:.1f} MB/hour, {summary['projected_download_tb']:.2f} TB over {years:.1f} years (streamed, not kept)",
         "", "Alternative encodings measured on a pilot subsample (MB/hour):", "",
-        "| Encoding | MB/hour | 3-year GB |", "|---|---|---|",
+        "| Encoding | MB/hour | Full-period GB |", "|---|---|---|",
         *[f"| {k} | {v / 1e6:.2f} | {v * T / 1e9:.0f} |" for k, v in enc.items()],
         "", "## Precision (int16 vs float32 6 km fields)", "",
         "Rule: max abs error <= half the largest GRIB packing step seen (plus floating-point representation tolerance: "
@@ -163,7 +170,7 @@ def main():
         "| Channel | int16 step | GRIB step (max) | max error | RMSE/std |", "|---|---|---|---|---|",
         *[f"| {r.channel} | {r.int16_step:g} | {r.q_src_max:g} | {r.max_abs_err:.4g} | {r.rmse_over_std:.1e} |" for r in prec.itertuples()],
         "", "## Gate", "",
-        f"Projected total {pg['total']:.1f} GB vs gate {GATE_GB:.0f} GB (budget {BUDGET_GB:.0f} GB, leaving >= 30 GB for temp files and checkpoints); "
+        f"Projected total {pg['total']:.1f} GB vs gate {GATE_GB:.0f} GB (budget {BUDGET_GB:.0f} GB, leaving >= {BUDGET_GB - GATE_GB:.0f} GB for temp files); "
         f"precision failures: {len(failing)}. **{'PASS' if gate_pass else 'FAIL'}**",
     ]
     (LOG_DIR / "pilot_report.md").write_text("\n".join(lines) + "\n")

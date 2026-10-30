@@ -174,7 +174,7 @@ def main():
     used = du_bytes(cfg["data_root_path"]) / 1e9
     pilot = METADATA_DIR / "pilot_summary.json"
     proj_gb = read_json(pilot)["projected_gb"]["total"] if pilot.exists() else None
-    proj_txt = f"; projected 3-year total from pilot {proj_gb:.1f} GB" if proj_gb is not None else ""
+    proj_txt = f"; projected full-period total from pilot {proj_gb:.1f} GB" if proj_gb is not None else ""
     rep.check("Output stays within the 100 GB budget", used <= BUDGET_GB and (proj_gb is None or proj_gb <= BUDGET_GB),
               f"data root currently {used:.2f} GB{proj_txt}")
 
