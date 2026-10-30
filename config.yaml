@@ -1,0 +1,95 @@
+# HRRR Northeast CNN dataset configuration.
+# Paths are relative to the project root unless absolute.
+# HRRR_DATA_ROOT (env var) overrides data_root, e.g. /cluster/scratch/<utln>/hrrr_cnn on Pax.
+
+data_root: data
+store_name: hrrr_ne_6km.zarr
+
+archive:
+  base_url: https://noaa-hrrr-bdp-pds.s3.amazonaws.com
+  domain: conus
+
+period:
+  start: "2023-10-01T00:00"
+  end: "2026-09-30T23:00"
+
+bbox: {north: 47.0, south: 38.0, west: -85.0, east: -66.0}
+coarsen: 2
+
+tufts: {lat: 42.40777867717294, lon: -71.12041637590173}
+
+splits:
+  train: ["2023-10-01T00:00", "2025-09-30T23:00"]
+  val: ["2025-10-01T00:00", "2026-03-31T23:00"]
+  test: ["2026-04-01T00:00", "2026-09-30T23:00"]
+
+lead_hours: 24
+rain_threshold_mm: 2.0
+
+storage:
+  # Channels listed here are stored as float32 instead of int16 (set after the pilot precision check).
+  float32_channels: []
+  # int16 step rule: "source" = finest GRIB packing step (from metadata/variable_inventory.csv) whose int16
+  # range covers the channel bounds, offset aligned to the step; "bounds" = (hi - lo) / 65534.
+  int16_step: source
+  # Delta filter (difference between neighboring values along x) before compression, as GRIB does.
+  delta_filter: true
+  compressor: {cname: zstd, clevel: 5, shuffle: bitshuffle}
+
+download:
+  threads_per_hour: 8
+  hours_in_flight: 3
+  retries: 5
+  timeout_s: 60
+
+# Input channels, in stored order. `source`:
+#   f00     -> analysis file of the same valid hour (wrfsfc preferred, wrfprs if the message is not in wrfsfc)
+#   f01prev -> 1 h forecast file of the previous hour's initialization (valid at the same hour)
+# `bounds` fix the int16 scale: step = (hi - lo) / 65534.
+surface_channels:
+  - {name: t2m,    var: TMP,   level: "2 m above ground",  units: K,       bounds: [170, 340]}
+  - {name: d2m,    var: DPT,   level: "2 m above ground",  units: K,       bounds: [150, 330]}
+  - {name: rh2m,   var: RH,    level: "2 m above ground",  units: "%",     bounds: [0, 105]}
+  - {name: u10,    var: UGRD,  level: "10 m above ground", units: m s-1,   bounds: [-120, 120]}
+  - {name: v10,    var: VGRD,  level: "10 m above ground", units: m s-1,   bounds: [-120, 120]}
+  - {name: gust,   var: GUST,  level: surface,             units: m s-1,   bounds: [0, 120]}
+  - {name: sp,     var: PRES,  level: surface,             units: Pa,      bounds: [45000, 110000]}
+  - {name: skt,    var: TMP,   level: surface,             units: K,       bounds: [170, 350]}
+  - {name: mslp,   var: MSLMA, level: mean sea level,      units: Pa,      bounds: [90000, 110000]}
+  - {name: cape,   var: CAPE,  level: surface,             units: J kg-1,  bounds: [0, 10000]}
+  - {name: cin,    var: CIN,   level: surface,             units: J kg-1,  bounds: [-2500, 0]}
+  - {name: pwat,   var: PWAT,  level: "entire atmosphere (considered as a single layer)", units: kg m-2, bounds: [0, 100]}
+  - {name: dswrf,  var: DSWRF, level: surface,             units: W m-2,   bounds: [0, 1500]}
+  - {name: apcp1h, var: APCP,  level: surface,             units: kg m-2,  bounds: [0, 300], source: f01prev}
+
+pressure_levels: [1000, 925, 850, 700, 500, 300, 250]
+pressure_variables:
+  - {name: t,   var: TMP,  units: K,     bounds: [150, 340]}
+  - {name: dpt, var: DPT,  units: K,     bounds: [120, 330]}
+  - {name: u,   var: UGRD, units: m s-1, bounds: [-150, 150]}
+  - {name: v,   var: VGRD, units: m s-1, bounds: [-150, 150]}
+  # Height bounds are per level so the int16 step (~0.0305 m) stays below the GRIB step (2^-5 = 0.03125 m).
+  - name: gh
+    var: HGT
+    units: gpm
+    bounds_by_level:
+      1000: [-1000, 1000]
+      925: [-300, 1700]
+      850: [500, 2500]
+      700: [2000, 4000]
+      500: [4400, 6400]
+      300: [8000, 10000]
+      250: [9300, 11300]
+
+static_fields:
+  - {name: orography, var: HGT,  level: surface, units: m}
+  - {name: land,      var: LAND, level: surface, units: "1"}
+
+targets:
+  - {name: t2m,          units: K,      from: TMP:2 m above ground}
+  - {name: rh2m,         units: "%",    from: RH:2 m above ground}
+  - {name: u10,          units: m s-1,  from: UGRD:10 m above ground, note: earth-relative}
+  - {name: v10,          units: m s-1,  from: VGRD:10 m above ground, note: earth-relative}
+  - {name: gust,         units: m s-1,  from: GUST:surface}
+  - {name: precip_1h,    units: mm,     from: "APCP:surface 0-1 hour acc (f01 of previous init)"}
+  - {name: rain_binary,  units: "1",    from: "precip_1h > rain_threshold_mm"}
