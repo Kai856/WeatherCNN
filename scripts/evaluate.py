@@ -43,29 +43,52 @@ def fit_platt(logit: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     return a, b
 
 
+def load_model(name: str, device) -> nn.Module:
+    ckpt = torch.load(CKPT_DIR / f"{name}.pt", map_location=device, weights_only=False)
+    kwargs = ckpt.get("model_kwargs") or {"in_channels": ckpt["in_channels"], "grid": tuple(ckpt["grid"])}
+    model = BaselineCNN(**kwargs).to(device)
+    model.load_state_dict(ckpt["model"])
+    return model
+
+
+class Ensemble(nn.Module):
+    """Mean of the members' outputs (normalized targets and rain logits)."""
+
+    def __init__(self, models: list[nn.Module]):
+        super().__init__()
+        self.members = nn.ModuleList(models)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.stack([m(x) for m in self.members]).mean(dim=0)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", default="baseline_cnn")
+    ap.add_argument("--name", default="baseline_cnn", help="checkpoint name; comma-separated names = ensemble")
     ap.add_argument("--split", default="test", choices=["val", "test"])
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--max-batches", type=int, default=None)
+    ap.add_argument("--calib", default=None,
+                    help="checkpoint(s) whose val predictions fit the rain calibration and thresholds "
+                         "(use the val-selected models when --name was trained with --final)")
     args = ap.parse_args()
-    log = setup_logging(f"evaluate_{args.name}")
+    names = args.name.split(",")
+    tag = "+".join(names)
+    log = setup_logging(f"evaluate_{tag}")
     cfg = load_config()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ckpt = torch.load(CKPT_DIR / f"{args.name}.pt", map_location=device)
-    kwargs = ckpt.get("model_kwargs") or {"in_channels": ckpt["in_channels"], "grid": tuple(ckpt["grid"])}
-    model = BaselineCNN(**kwargs).to(device)
-    model.load_state_dict(ckpt["model"])
-    datasets = make_datasets(cfg, prev_hours=ckpt.get("prev_hours", 0))
+    models = [load_model(n, device) for n in names]
+    model = Ensemble(models) if len(models) > 1 else models[0]
+    ckpt = torch.load(CKPT_DIR / f"{names[0]}.pt", map_location="cpu", weights_only=False)
+    datasets = make_datasets(cfg, prev_hours=ckpt.get("prev_hours", 0), delta=ckpt.get("delta", False))
     samples = pd.read_parquet(METADATA_DIR / "samples.parquet")
     root = zarr.open_group(str(cfg["store_path"]), mode="r")
     ms, sp = cfg["model_selection"], cfg["splits"]
     periods = {"val": (ms["val"], ms["fit"]), "test": (sp["test"], sp["train"])}
 
-    def forecasts(split):
+    def forecasts(split, model):
         """{method: (truth, prediction, rain probability)} in real units for one split (CNN: rain logit)."""
         ds = datasets[split]
         loader = DataLoader(ds, batch_size=args.batch_size, num_workers=args.workers,
@@ -75,7 +98,7 @@ def main():
         log.info("%s loss %.4f", split, loss)
         n = len(out)
         truth, refs = reference_forecasts(root, samples, *periods[split], eval_samples=ds.samples)
-        res = {"CNN": (ds.unnormalize(y).numpy(), ds.unnormalize(out).numpy(), out[:, 6].numpy().astype(np.float64))}
+        res = {"CNN": (ds.to_real(y, y), ds.to_real(out, y), out[:, 6].numpy().astype(np.float64))}
         res.update({m: (truth[:n], p[:n], rp[:n]) for m, (p, rp) in refs.items()})
         return res
 
@@ -84,24 +107,33 @@ def main():
         res["CNN"] = (t, p, 1 / (1 + np.exp(-(a * logit + b))))
         return 1 / (1 + np.exp(-logit))
 
-    val = forecasts("val")
+    calib_model = model
+    if args.calib:
+        calib_model = Ensemble([load_model(n, device) for n in args.calib.split(",")])
+    val = forecasts("val", calib_model)
     a, b = fit_platt(val["CNN"][2], val["CNN"][0][:, 6])
     calibrate(val)
     thresholds = {m: best_threshold(t[:, 6], rp) for m, (t, _, rp) in val.items()}
-    final = val if args.split == "val" else forecasts(args.split)
+    final = val if args.split == "val" else forecasts(args.split, model)
     raw = calibrate(final) if final is not val else None
     results = {m: score(t, p, rp, thresholds[m]) for m, (t, p, rp) in final.items()}
     period, n = periods[args.split][0], len(final["CNN"][0])
     raw_brier = f"; uncalibrated CNN Brier {np.mean((raw - final['CNN'][0][:, 6]) ** 2):.3f}" if raw is not None else ""
 
-    sel = f"val skill {ckpt['val_skill']:.4f}" if "val_skill" in ckpt else f"val loss {ckpt['val_loss']:.4f}"
-    lines = [f"# {args.name} on {args.split} ({period[0]} .. {period[1]}, {n:,} samples)", "",
-             f"Checkpoint: epoch {ckpt['epoch']}, {sel}. Lower is better except AUC and F1.",
-             f"CNN rain probability Platt-calibrated on val: sigmoid({a:.3f} * logit + {b:.3f}){raw_brier}.",
+    if len(names) > 1:
+        sel = f"ensemble of {len(names)}"
+    else:
+        sel = f"epoch {ckpt['epoch']}, " + (f"val skill {ckpt['val_skill']:.4f}" if "val_skill" in ckpt
+                                            else f"val loss {ckpt['val_loss']:.4f}")
+    calib_src = f" (fitted with {args.calib})" if args.calib else ""
+    lines = [f"# {tag} on {args.split} ({period[0]} .. {period[1]}, {n:,} samples)", "",
+             f"Checkpoint: {sel}. Lower is better except AUC and F1.",
+             f"CNN rain probability Platt-calibrated on val{calib_src}: "
+             f"sigmoid({a:.3f} * logit + {b:.3f}){raw_brier}.",
              "Rain F1 uses each method's threshold tuned on val: "
              + ", ".join(f"{m} {t:.3f}" for m, t in thresholds.items()) + ".",
              "", *format_table(results), ""]
-    (LOG_DIR / f"eval_{args.name}.md").write_text("\n".join(lines) + "\n")
+    (LOG_DIR / f"eval_{tag}.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 

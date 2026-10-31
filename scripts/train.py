@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, Subset
 
 from baselines import reference_forecasts, score
 from common import LOG_DIR, METADATA_DIR, PROJECT_ROOT, load_config, setup_logging
-from hrrr_dataset import make_datasets
+from hrrr_dataset import HRRRDataset, make_datasets
 from model import BaselineCNN, n_params
 
 CKPT_DIR = PROJECT_ROOT / "checkpoints"
@@ -73,9 +73,7 @@ def predict(model, loader, device, pos_weight, max_batches=None):
 
 
 def real_metrics(ds, out: torch.Tensor, y: torch.Tensor) -> dict:
-    pred = ds.unnormalize(out).numpy()
-    truth = ds.unnormalize(y).numpy()
-    return score(truth, pred, torch.sigmoid(out[:, 6]).numpy())
+    return score(ds.to_real(y, y), ds.to_real(out, y), torch.sigmoid(out[:, 6]).numpy())
 
 
 def main():
@@ -89,6 +87,10 @@ def main():
     ap.add_argument("--hidden", type=int, default=256, help="dense head width")
     ap.add_argument("--kernel", type=int, default=3, help="conv kernel size (odd)")
     ap.add_argument("--prev-hours", type=int, default=0, help="also input the fields from t - N hours (e.g. 24)")
+    ap.add_argument("--delta", action="store_true", help="predict the 24 h change from the Tufts values at t")
+    ap.add_argument("--final", action="store_true",
+                    help="train on the whole train split (fit + val) for exactly --epochs and keep the last epoch; "
+                         "val metrics are then only a sanity check (val is in the training data)")
     ap.add_argument("--pool", type=int, nargs=2, default=None, metavar=("H", "W"),
                     help="average-pool the final feature map to H x W before flattening")
     ap.add_argument("--stride", type=int, default=3, help="use every k-th fit hour per epoch")
@@ -103,8 +105,10 @@ def main():
     rng = np.random.default_rng(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ds = make_datasets(prev_hours=args.prev_hours)
+    ds = make_datasets(prev_hours=args.prev_hours, delta=args.delta)
     fit, val = ds["fit"], ds["val"]
+    if args.final:
+        fit = HRRRDataset("train", prev_hours=args.prev_hours, delta=args.delta)
     val_sub = Subset(val, range(0, len(val), args.val_stride))
     loader_kw = dict(batch_size=args.batch_size, num_workers=args.workers, pin_memory=device.type == "cuda",
                      persistent_workers=args.workers > 0)
@@ -164,10 +168,10 @@ def main():
                  epoch, train_loss, val_loss, val_skill, metrics["t2m RMSE"], metrics["gust RMSE"],
                  metrics["rain AUC"], row["seconds"])
 
-        if val_skill < best:
-            best, bad = val_skill, 0
+        if args.final or val_skill < best:
+            best, bad = min(best, val_skill), 0
             torch.save({"model": model.state_dict(), "model_kwargs": model_kwargs, "pos_weight": pos_weight.item(),
-                        "prev_hours": args.prev_hours, "epoch": epoch, "val_loss": val_loss,
+                        "prev_hours": args.prev_hours, "delta": args.delta, "epoch": epoch, "val_loss": val_loss,
                         "val_skill": val_skill, "val_metrics": metrics, "args": vars(args)}, ckpt_path)
             log.info("  saved %s", ckpt_path)
         else:
